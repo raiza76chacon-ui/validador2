@@ -1,0 +1,6 @@
+streamlit
+pandas
+google-genai
+openai
+pypdf
+psycopg2-binary

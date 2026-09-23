@@ -10,6 +10,7 @@ import pandas as pd
 from google import genai
 from google.genai import types
 from openai import OpenAI
+import time
 
 # ==========================================
 # CONFIGURACIÓN DE SECRETOS Y CONEXIÓN
@@ -215,31 +216,100 @@ with tab1:
         time.sleep(3) # Opcional: Pausa breve antes de limpiar si lo deseas
 
 with tab2:
-    if "messages" not in st.session_state: st.session_state.messages = []
-    for msg in st.session_state.messages: st.chat_message(msg["role"]).write(msg["content"])
+    # Encabezado con botón para limpiar el chat
+    col_title, col_btn = st.columns([4, 1])
+    with col_title:
+        st.markdown('<div class="section-title"><i class="fa-solid fa-robot" style="color:#3b82f6;"></i> Motor de Análisis de Riesgo</div>', unsafe_allow_html=True)
+    with col_btn:
+        st.write("") # Espaciador
+        if st.button("🗑️ Borrar Chat", use_container_width=True):
+            st.session_state.messages = []
+            st.rerun()
+            
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
 
-    if user_prompt := st.chat_input("Ej: Jabón Zest..."):
+    # Mostrar historial de mensajes
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    # Input del usuario
+    if user_prompt := st.chat_input("Ej: Jabón Zest. Tengo IP Residencial y enviaré a la sede de Midland (79706)."):
         st.session_state.messages.append({"role": "user", "content": user_prompt})
-        st.chat_message("user").write(user_prompt)
+        with st.chat_message("user"):
+            st.markdown(user_prompt)
 
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT nombre_display, veces_exitoso, veces_rechazado FROM productos")
-        resumen = "\n".join([f"- {r[0]} | Éxitos: {r[1]} | Rechazos: {r[2]}" for r in cursor.fetchall()]) or "Sin registros."
-        conn.close()
-
-        prompt_chat = f"Evalúa esta compra: '{user_prompt}'. Historial:\n{resumen}\nResponde riesgo global y productos riesgosos."
-        
         with st.chat_message("assistant"):
+            # Obtener datos robustos de PostgreSQL
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT p.nombre_display, p.veces_exitoso, p.veces_rechazado, p.tienda,
+                       (SELECT h.ip || ' (' || h.tipo_conexion || ') | Sede: ' || COALESCE(h.sede, 'N/A') || ' Zip: ' || COALESCE(h.zip_code, 'N/A') 
+                        FROM historial_compras h WHERE h.producto_id = p.id ORDER BY h.fecha DESC LIMIT 1) as ultimos_datos
+                FROM productos p
+            """)
+            registros = cursor.fetchall()
+            conn.close()
+            
+            # Construir el resumen para el prompt
+            inventario_resumen = ""
+            for r in registros:
+                total = r[1] + r[2]
+                probabilidad = round((r[1] / total) * 100) if total > 0 else 0
+                inventario_resumen += f"- {r[0]} | Éxitos: {r[1]} | Rechazos: {r[2]} | Probabilidad: {probabilidad}% | Última red/sede: {r[4]}\n"
+            
+            if not inventario_resumen:
+                inventario_resumen = "Sin registros previos."
+
+            # Prompt estructurado
+            prompt_chat = f"""
+            Eres un motor de análisis algorítmico de riesgo para compras online. Evalúa esta intención de compra del usuario: "{user_prompt}"
+
+            Datos históricos de la Base de Datos:
+            {inventario_resumen}
+
+            Instrucciones estrictas:
+            Sé ultraconciso. Cero rodeos, sin saludos ni introducciones amables. Ve directo al grano.
+            Usa el siguiente formato exacto:
+
+            **📊 RIESGO GLOBAL DE LA COMPRA:** [ALTO / MEDIO / BAJO]
+            **⚡ ÍNDICE DE CONFIANZA DEL CARRITO (TCI):** [Calcula un % global de 0 a 100 basado en el cruce de los datos, red e historial]
+
+            **🔴 PRODUCTOS DE ALTO RIESGO DE CANCELACIÓN:**
+            (Listado de productos con historial negativo. Si no hay, escribe "Ninguno detectado".)
+            - [Producto]: [X] negativos históricos | [Razón brevísima]
+
+            **🟢 PRODUCTOS DE BAJO RIESGO / SEGUROS:**
+            (Listado de productos con buen historial o sin alertas rojas.)
+            - [Producto]: [X]% de probabilidad de éxito | [Motivo breve]
+            """
+
             try:
-                if "gemini" in modelo_elegido:
-                    resp = st.write_stream((c.text for c in client.models.generate_content_stream(model=modelo_elegido, contents=prompt_chat)))
-                else:
-                    stream = alt_client.chat.completions.create(model=modelo_elegido, messages=[{"role": "user", "content": prompt_chat}], stream=True)
-                    resp = st.write_stream((c.choices[0].delta.content for c in stream if c.choices and c.choices[0].delta.content))
-                st.session_state.messages.append({"role": "assistant", "content": resp})
-            except Exception:
-                st.error("Error al conectar con la IA.")
+                with st.spinner(f"Analizando riesgos con {modelo_elegido}..."):
+                    if "gemini" in modelo_elegido:
+                        response_stream = client.models.generate_content_stream(model=modelo_elegido, contents=prompt_chat)
+                        def stream_gemini():
+                            for chunk in response_stream:
+                                yield chunk.text
+                        respuesta_completa = st.write_stream(stream_gemini())
+                    else:
+                        response_alt = alt_client.chat.completions.create(
+                            model=modelo_elegido,
+                            messages=[{"role": "user", "content": prompt_chat}],
+                            stream=True
+                        )
+                        def stream_openrouter():
+                            for chunk in response_alt:
+                                if chunk.choices and len(chunk.choices) > 0 and chunk.choices[0].delta.content is not None:
+                                    yield chunk.choices[0].delta.content
+                        respuesta_completa = st.write_stream(stream_openrouter())
+                        
+                    st.session_state.messages.append({"role": "assistant", "content": respuesta_completa})
+                    
+            except Exception as e:
+                st.error("⚠️ El modelo está saturado en este momento. Utiliza un modelo distinto en el panel lateral o vuelve a intentar en unos segundos.")
 
 with tab3:
     conn = get_db_connection()

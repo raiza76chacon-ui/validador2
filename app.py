@@ -187,14 +187,32 @@ with tab1:
         
     uploaded_files = st.file_uploader("PDFs", type=["pdf"], accept_multiple_files=True)
     if uploaded_files and st.button("Procesar"):
-        for archivo in uploaded_files:
-            datos = extraer_datos_pdf(archivo.read(), tienda_sel, modelo_elegido)
-            if datos.get("productos"):
+        total_archivos = len(uploaded_files)
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        productos_totales = 0
+        
+        for index, archivo in enumerate(uploaded_files):
+            # Actualiza el texto para mostrar qué archivo se está procesando
+            status_text.markdown(f"⏳ Procesando archivo {index + 1} de {total_archivos}: **{archivo.name}**...")
+            
+            with st.spinner(f"Extrayendo datos con {modelo_elegido}..."):
+                datos = extraer_datos_pdf(archivo.read(), tienda_sel, modelo_elegido)
+                
+            productos = datos.get("productos")
+            if productos:
                 guardar_o_actualizar_productos(
-                    datos["productos"], tienda_sel, estado_orden, ip_compra, ciudad_compra, 
+                    productos, tienda_sel, estado_orden, ip_compra, ciudad_compra, 
                     isp_compra, tipo_conexion, datos.get("sede") or sede_input, datos.get("zip_code") or zip_input
                 )
-        st.success("Procesado correctamente.")
+                productos_totales += len(productos)
+                
+            # Avanza la barra de progreso proporcionalmente
+            progress_bar.progress((index + 1) / total_archivos)
+            
+        # Mensaje de éxito final con contadores
+        status_text.success(f"✅ ¡Completado! {total_archivos} archivo(s) procesado(s) y {productos_totales} producto(s) registrado(s) en la base de datos.")
+        time.sleep(3) # Opcional: Pausa breve antes de limpiar si lo deseas
 
 with tab2:
     if "messages" not in st.session_state: st.session_state.messages = []

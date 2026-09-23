@@ -163,7 +163,7 @@ if not st.session_state.authenticated:
     st.stop()
 
 with st.sidebar:
-    modelo_elegido = st.selectbox("Motor de IA:", ["gemini-3.5-flash-lite", "gemini-3.6-flash", "nvidia/nemotron-3.5-lightning:free"])
+    modelo_elegido = st.selectbox("Motor de IA:", ["gemini-3.5-flash-lite", "gemini-3.6-flash", "inclusionai/ling-3.0-flash-fin:free"])
     if st.button("Detener Consulta"): st.rerun()
     if st.button("Cerrar Sesión"): 
         st.session_state.authenticated = False
